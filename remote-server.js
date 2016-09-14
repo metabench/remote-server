@@ -51,6 +51,58 @@ var filter_string_lines_matching = (string, regex) => {
 
 }
 
+var mapify_arr_kvs = (arr_kvs) => {
+	var res = {};
+	arr_kvs.forEach((v) => {
+		res[v[0]] = v[1];
+	});
+	return res;
+}
+
+var proc_stat_diff = (stat1, stat2) => {
+	var res = {};
+
+	if (stat1.cpus.length === stat2.cpus.length) {
+		// Amalgamated CPUs
+		var l = stat1.amalgamated_cpu.length - 1;
+		//console.log('stat1.amalgamated_cpu', stat1.amalgamated_cpu);
+		var res_amalgamated_cpu = new Array(l);
+		var c, d;
+
+		for (d = 1; d <= l; d++) {
+			res_amalgamated_cpu[d - 1] = stat2.amalgamated_cpu[d] - stat1.amalgamated_cpu[d];
+			//console.log('res_amalgamated_cpu[d - 1]', res_amalgamated_cpu[d - 1]);
+		}
+
+
+		var count_cpus = stat1.cpus.length;
+		var res_cpus = [];
+
+
+
+		for (c = 0; c < count_cpus; c++) {
+			l = stat1.cpus[0].length - 1;
+
+			var res_cpu = new Array(l);
+			for (d = 1; d < l; d++) {
+				res_cpu[d - 1] = stat2.cpus[c][d] - stat1.cpus[c][d];
+			}
+			res_cpus.push(res_cpu);
+
+
+
+
+		}
+		res.amalgamated_cpu = res_amalgamated_cpu;
+		res.cpus = res_cpus;
+	}
+
+	return res;
+
+
+}
+
+
 // This could also install things with YUM.
 //  Prior to using routes, it would need to install net-tools if routes is not available.
 
@@ -155,17 +207,17 @@ class Remote_Server {
 
 		that.get_bash_profile((err, bash_profile) => {
 			if (err) { callback(err); } else {
-				console.log('bash_profile', bash_profile);
+				//console.log('bash_profile', bash_profile);
 
 				var filtered_bash_profile = filter_string_lines_matching(bash_profile, regex);
 
-				console.log('filtered_bash_profile', filtered_bash_profile);
+				//console.log('filtered_bash_profile', filtered_bash_profile);
 
 				that.set_bash_profile(filtered_bash_profile, (err, res_set) => {
 					if (err) {
 						callback(err);
 					} else {
-						console.log('res_set', res_set);
+						//console.log('res_set', res_set);
 
 						callback(null, true);
 					}
@@ -199,7 +251,7 @@ class Remote_Server {
 
 			conn.exec(command, (err, stream) => {
 				stream.on('close', (code, signal) => {
-					console.log('stream closed');
+					//console.log('stream closed');
 
 					//console.log('Stream :: close :: code: ' + code + ', signal: ' + signal);
 					//conn.end();
@@ -246,9 +298,340 @@ class Remote_Server {
 		});
 	}
 
-	// cat ~/.bash_profile
-	get_bash_profile(callback) {
-		this.bash_command('cat ~/.bash_profile', function(err, profile) {
+	// Want to work out if a machine is
+
+	// ?????? - Mostly free with spare capacity
+	//        - Somewhat busy so restrain the process slightly (maybe 60% total)
+	//        - Busy enough so that we should restrain the new work a lot, like only using 1 or 2 threads
+
+	// idle to mostly-idle     ] Safety zone
+	// somewhat-busy           ]                   ] Efficiency zone
+	// very-busy               .                   ]
+	// overloaded
+
+	// Activity levels
+
+
+
+	get_cat_proc_stat_diff(delay, callback) {
+		var that = this;
+
+		var t1 = new Date().getTime();
+
+		that.get_cat_proc_stat((err, stat1) => {
+			if (err) { callback(err) } else {
+
+				var t2 = new Date().getTime();
+
+				var roundtrip_time = t2 - t1;
+
+				//console.log('roundtrip_time', roundtrip_time);
+
+				//console.log('stat1', stat1);
+
+				var delay2 = delay - roundtrip_time / 3;
+				if (delay2 < 0) delay2 = 0;
+
+				//var delay = 1000;
+
+				setTimeout(() => {
+
+					that.get_cat_proc_stat((err, stat2) => {
+						if (err) { callback(err) } else {
+
+							//var t3 = new Date().getTime();
+
+							//var roundtrip_time_2 = t3 - t2;
+
+							//console.log('roundtrip_time_2', roundtrip_time_2);
+
+							//console.log('stat2', stat2);
+
+							var stat_diff = proc_stat_diff(stat1, stat2);
+							//console.log('stat_diff', stat_diff);
+
+							callback(null, stat_diff);
+
+							/*
+							 user: normal processes executing in user mode
+							 nice: niced processes executing in user mode
+							 system: processes executing in kernel mode
+							 idle: twiddling thumbs
+							 iowait: waiting for I/O to complete
+							 irq: servicing interrupts
+							 softirq: servicing softirqs
+							 */
+
+
+
+
+						}
+					});
+
+
+
+				}, delay2);
+
+
+
+			}
+		});
+
+	}
+
+	get_cat_proc_stat_1s_diff(callback) {
+		this.get_cat_proc_stat_diff(1000, callback);
+	}
+
+	get_cpu_timed_amalgamated_proportion_nonidle_core_count(delay, callback) {
+		// proportion between 0 and 1
+
+		var that = this;
+		that.get_cat_proc_stat_diff(delay, (err, stat_diff) => {
+			if (err) {
+				callback(err);
+			} else {
+				var arr_amalgamated = stat_diff.amalgamated_cpu;
+
+				//console.log('arr_amalgamated', arr_amalgamated);
+				//console.log('arr_amalgamated.length', arr_amalgamated.length);
+
+				var working = 0, idle = 0, l = arr_amalgamated.length;
+
+				for (var c = 0; c < l; c++) {
+					//console.log('typeof arr_amalgamated[c]', typeof arr_amalgamated[c]);
+
+					if (c === 3) {
+						idle += arr_amalgamated[c];
+					} else {
+						working += arr_amalgamated[c];
+					}
+				}
+
+				var total = working + idle;
+
+				var prop_working = working / total;
+				//var res = [prop_working, stat_diff.cpus.length];
+				var res = {
+					'proportion_not_idle': prop_working,
+					'cpu_core_count': stat_diff.cpus.length
+				}
+
+				callback(null, res);
+			}
+		})
+	}
+
+
+	get_proc_meminfo(callback) {
+		this.cat_get_file('/proc/meminfo', (err, str_meminfo) => {
+			//var rows = column_parser(str_cpuinfo);
+			//console.log('rows', rows);
+
+			//console.log('str_stat', str_stat);
+
+			//console.log('str_meminfo', str_meminfo);
+
+
+			// will format it with [value, unit] though all are kB so far
+
+			var lines_meminfo = str_meminfo.trim().split(/\r?\n/);
+
+			//console.log('lines_meminfo', lines_meminfo);
+
+			var res = {};
+
+			lines_meminfo.forEach((v) => {
+				var s_line = v.split(':');
+
+				s_line[1] = s_line[1].trim().split(' ');
+				s_line[1][0] = parseInt(s_line[1][0]);
+
+				res[s_line[0]] = s_line[1];
+
+
+				//console.log('s_line', s_line);
+			})
+
+			callback(null, res);
+		});
+	}
+
+	// Get number of cores and overall utilization over 1s.
+
+	get_cat_proc_stat(callback) {
+		this.cat_get_file('/proc/stat', (err, str_stat) => {
+			//var rows = column_parser(str_cpuinfo);
+			//console.log('rows', rows);
+
+			//console.log('str_stat', str_stat);
+
+			var stat_lines = str_stat.split('\n');
+			// read the lines into CPU lines, and other lines.
+			var amalgamated_cpus_line;
+			var cpu_lines = [];
+			var other_lines = [];
+			var saved_as_cpu;
+
+			//console.log('stat_lines', stat_lines);
+
+			stat_lines.forEach((v, i) => {
+				var split_line = v.replace(/\s+/g, ' ').split(' ');
+				saved_as_cpu = false;
+
+				//console.log('split_line.length', split_line.length);
+
+				if (split_line.length === 9) {
+					//split_line[0] = split_line[0].trim();
+					if (split_line[0].indexOf('cpu') === 0) {
+						if (split_line[0].length > 3) {
+							//console.log('split_line', split_line);
+
+
+							cpu_lines.push(split_line);
+						} else {
+							amalgamated_cpus_line = split_line;
+						}
+						saved_as_cpu = true;
+					}
+				}
+				if (!saved_as_cpu) {
+					if (split_line.length > 1) {
+						//console.log('split_line', split_line);
+						other_lines.push(split_line);
+					}
+				}
+			});
+
+			var res = {
+				'amalgamated_cpu': amalgamated_cpus_line,
+				'cpus': cpu_lines,
+				'other': other_lines
+			};
+
+			callback(null, res);
+		});
+	}
+
+	get_cpuinfo(callback) {
+		this.cat_get_file('/proc/cpuinfo', (err, str_cpuinfo) => {
+			//var rows = column_parser(str_cpuinfo);
+			//console.log('rows', rows);
+
+			//console.log('str_cpuinfo', str_cpuinfo);
+
+			var str_arr_cpus = str_cpuinfo.trim().split('\n\n');
+			//console.log('str_arr_cpus.length', str_arr_cpus.length);
+
+			var res_cpus = [];
+
+			str_arr_cpus.forEach((v) => {
+				var cpu_lines = v.split('\n');
+				var cpu_kvs = [];
+				cpu_lines.forEach((v) => {
+					var cpu_kv = v.split(': ');
+
+					if (cpu_kv.length === 2) {
+						//console.log('cpu_kv.length', cpu_kv.length);
+
+						cpu_kv[0] = cpu_kv[0].trim();
+
+						// Then we can parse the value
+
+						if (cpu_kv[1] === 'yes') cpu_kv[1] = true;
+						if (cpu_kv[1] === 'no') cpu_kv[1] = false;
+
+						var num_v = +cpu_kv[1];
+						//console.log('num_v', num_v);
+						//console.log('typeof num_v', typeof num_v);
+
+						if (isNaN(num_v)) {
+
+						} else {
+							cpu_kv[1] = num_v;
+						}
+					}
+
+					cpu_kvs.push(cpu_kv);
+				})
+				//console.log('cpu_kvs', cpu_kvs);
+
+				var map_cpu = mapify_arr_kvs(cpu_kvs);
+
+
+				//console.log('map_cpu', map_cpu);
+
+				res_cpus.push(map_cpu);
+
+
+				// mapify_arr_kvs
+
+				//console.log('cpu_lines', cpu_lines);
+			});
+
+			//console.log('res_cpus', res_cpus);
+
+			callback(null, res_cpus);
+
+		});
+	}
+
+	// get the proc stat
+	// two readings, 1s apart, and we can calculate things
+
+	// proc stat timed diff
+
+	// A reading of how unidle the processors have been in the last second will be useful.
+
+
+
+
+
+
+
+
+
+
+
+
+
+	get_general_performance_capabilities(callback) {
+		// nproc = number of cpus / available CPU threaded units
+		// cat /proc/meminfo
+		//  detailed memory usage
+		// cat /proc/cpuinfo
+		//  detailed CPU info
+
+	}
+
+
+	// build and install from source.
+	//  needs yum: gcc gcc-c++
+
+	// Find out the latest node version...?
+	//  Or be given the node version on init.
+	//  Will be in a different piece of code
+
+	download_build_install(url, callback) {
+		// Want to find out how many CPUs are available.
+		//  How much work the CPUs are doing too. Don't want to tax the system too much.
+		//  Can use 1 thread if CPUs are generally busy.
+		//  Generally will try to make use of available resources.
+
+		// get general performance profile (capabilities, benchmarks under best conditions?)
+		//  number of CPUs available, amount of RAM total
+
+		// get_general_performance_capabilities
+
+		// get very recent performance profile
+		// get immediate performance profile
+
+		// Can make some heuristics to know when to use many threads and when not to.
+
+	}
+
+	cat_get_file(path, callback) {
+		this.bash_command('cat ' + path, function(err, str_file) {
 			if (err) {
 				callback(err);
 			} else {
@@ -256,9 +639,15 @@ class Remote_Server {
 				//var res = matching.trim().split(/\r?\n/);
 				// then reformat it into an array
 				//var rows = column_parser(res_ps_aux);
-				callback(null, profile);
+				callback(null, str_file);
 			}
 		});
+	}
+
+	// cat ~/.bash_profile
+	get_bash_profile(callback) {
+		// ~/.bash_profile
+		this.cat_get_file('~/.bash_profile', callback);
 	}
 
 	set_bash_profile(bash_profile, callback) {
@@ -285,12 +674,12 @@ class Remote_Server {
 
 		var command = 'echo "' + text.split('"').join('\\"') + '" > \'' + path + '\'';
 
-		console.log('command', command);
+		//console.log('command', command);
 		this.bash_command(command, function(err, res) {
 			if (err) {
 				callback(err);
 			} else {
-				console.log('res', res);
+				//console.log('res', res);
 				//var res = matching.trim().split(/\r?\n/);
 				// then reformat it into an array
 				//var rows = column_parser(res_ps_aux);
